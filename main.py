@@ -20,8 +20,8 @@ def plot(shot, scores, losses, epsilons):
     plt.plot(epsilons)
     plt.savefig('train_results.png')
 
-def train(agent, env: env.RLEnvPlayer, num_shots: int, seed: int):
-    agent.testing = False
+def train(agent: env.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
+    agent.train()
 
     state, _ = env.reset(seed=seed)
     epsilons = []
@@ -34,6 +34,8 @@ def train(agent, env: env.RLEnvPlayer, num_shots: int, seed: int):
             print(f"Shot: {shot}")
         
         action = agent.select_action(state)
+        if action is None:
+            action = env.action_space.sample()
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
@@ -42,17 +44,22 @@ def train(agent, env: env.RLEnvPlayer, num_shots: int, seed: int):
         state = next_state
         score += reward
         if done:
-            state, _ = env.reset(seed)
+            state, _ = env.reset(seed=seed)
             scores.append(score)
             score = 0
         
-        agent.replay_train()
+        vals = agent.replay_train()
+        if vals is not None:
+            losses.append(vals[0])
+            epsilons.append(vals[1])
     
     plot(shot, scores, losses, epsilons)
 
     env.close()
 
 if __name__ == "__main__":
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     opponent = RandomPlayer(
         battle_format = "gen5randombattle",
         server_configuration=LocalhostServerConfiguration
@@ -66,23 +73,24 @@ if __name__ == "__main__":
         server_configuration=LocalhostServerConfiguration
     )
     
-    testing_env = env.RLEnvPlayer(
+    testing_env = env.RLEnv(
         embed_type=embeddings.EMBED_DICT[0],
         reward_type=rewards.REW_DICT[0],
         reward_params=(2.0, 1.0, 6, 0.0, 30.0),
         battle_format="gen5randombattle",
         server_configuration=LocalhostServerConfiguration,
         start_challenging=True,
-        opponent=opponent
+        opponent=opponent2
     )
+    obs_dim = testing_env.observation_space.shape[0]
+    action_dim = testing_env.action_space.n
+    dqn = env.EpsilonGreedyDQN(device, [128, 128], obs_dim, action_dim, 1000, 32, 100, 1 / 2000)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dqn = env.DQNAgent(device, [128, 128], testing_env, 1000, 32, 100, 1 / 2000, 42)
-
-    dqn.train(10000)
+    train(dqn, testing_env, num_shots=10000, seed=42)
 
     dqn_player = env.AgentPlayer(
         agent=dqn,
+        env=testing_env,
         battle_format='gen5randombattle',
         server_configuration=LocalhostServerConfiguration           
     )
