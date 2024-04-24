@@ -9,7 +9,7 @@ class SimpleReplayBuffer:
         self.rewards_buf = torch.zeros(size).to(device)
         self.done_buf = torch.zeros(size).to(device)
         self.max_size, self.batch_size = size, batch_size
-        self.ptr, self.cur_size = 0, 0
+        self.ptr, self.size = 0, 0
         self.device = device
     
     def store(self, state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,

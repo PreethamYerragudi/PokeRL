@@ -1,6 +1,7 @@
 import torch
+import time
 import numpy as np
-from poke_env.player import Gen5EnvSinglePlayer, OpenAIGymEnv
+from poke_env.player import Gen5EnvSinglePlayer, OpenAIGymEnv, Player
 from poke_env.data import GenData
 
 import matplotlib.pyplot as plt
@@ -9,11 +10,33 @@ import embeddings
 import rewards
 import nets
 
-class DQNAgent:
-    def __init__(self, device, shape: list[int], env: OpenAIGymEnv, memory_size: int, batch_size: int, target_update: int, epsilon_decay: float,
-                 seed: int, max_epsilon: float = 1.0, min_epsilon: float = 0.1, gamma: float = 0.99):
+
+class RLAgent:
+    def __init__(self, device, env: OpenAIGymEnv):
         self.device = device
         self.env = env
+
+        self.testing = False
+    
+    def select_action(self, state):
+        pass
+
+class AgentPlayer(Player):
+    def __init__(self, agent: RLAgent, **kwargs):
+        self.agent = agent
+        self.agent.testing = True
+
+        super(AgentPlayer, self).__init__(**kwargs)
+    
+    def choose_move(self, battle):
+        embed = self.agent.env.embed_battle(battle)
+        action = self.agent.select_action(embed)
+        return self.agent.env.action_to_move(action, battle)
+
+class DQNAgent(RLAgent):
+    def __init__(self, device, shape: list[int], env: OpenAIGymEnv, memory_size: int, batch_size: int, target_update: int, epsilon_decay: float,
+                 seed: int, max_epsilon: float = 1.0, min_epsilon: float = 0.1, gamma: float = 0.99):
+        super(DQNAgent, self).__init__(device, env)
 
         self.batch_size = batch_size
         self.epsilon = max_epsilon
@@ -34,7 +57,6 @@ class DQNAgent:
 
         self.transition = list()
         self.optimizer = torch.optim.SGD(self.dqn.parameters())
-        self.testing = False
     
     def select_action(self, state):
         if not self.testing:
@@ -44,7 +66,7 @@ class DQNAgent:
                 selected_action = self.dqn(torch.tensor(state, dtype=torch.float, device=self.device)).argmax()
                 selected_action = selected_action.detach().cpu().numpy()
                         
-                self.transition = [state, selected_action]
+            self.transition = [state, selected_action]
         else:
             selected_action = self.dqn(torch.tensor(state, dtype=torch.float, device=self.device)).argmax()
             selected_action = selected_action.detach().cpu().numpy()
@@ -55,13 +77,13 @@ class DQNAgent:
         next_state, reward, terminated, truncated, _ = self.env.step(action)
         done = terminated or truncated
 
-        if not self.is_testing:
+        if not self.testing:
             self.transition += [reward, next_state, done]
             self.memory.store(*[torch.tensor(val ,dtype=torch.float) for val in self.transition])
         
         return next_state, reward, done
 
-    def train(self, num_shots: int, plotting_interval: int=200):
+    def train(self, num_shots: int):
         self.testing = False
 
         state, _ = self.env.reset(seed=self.seed)
@@ -71,6 +93,9 @@ class DQNAgent:
         scores = []
         score = 0
         for shot in range(1, num_shots+1):
+            if shot % 500 == 0:
+                print(f"shot: {shot}")
+
             action = self.select_action(state)
             next_state, reward, done = self.step(action)
 
@@ -81,7 +106,7 @@ class DQNAgent:
                 state, _ = self.env.reset(seed=self.seed)
                 scores.append(score)
                 score = 0
-            if len(self.memory >= self.batch_size):
+            if len(self.memory) >= self.batch_size:
                 samples = self.memory.sample_batch()
                 loss = self._compute_dqn_loss(samples)
 
@@ -98,33 +123,41 @@ class DQNAgent:
                 if update_cnt % self.target_update == 0:
                     self.dqn_target.load_state_dict(self.dqn.state_dict())
 
-            if shot % plotting_interval == 0:
-                self._plot(shot, scores, losses, epsilons)
+        self._plot(shot, scores, losses, epsilons)
 
         self.env.close()
     
-    def test(self):
+    def test(self, eval_env: OpenAIGymEnv, num_episodes: int):
         self.testing = True
+        scores = []
 
-        state, _ = self.env.reset(seed=self.seed)
-        done = False
-        score = 0
+        for i in range(1, num_episodes+1):
+            if i % 50 == 0:
+                print(f"Episode {i}")
+            score = 0
+            state, _ = eval_env.reset(seed=self.seed)
+            done = False
+            while not done:
+                action = self.select_action(state)
+                next_state, reward, terminated, truncated, _ = eval_env.step(action)
+                done = terminated or truncated
 
-        while not done:
-            action = self.select_action(state)
-            next_state, reward, done = self.step(action)
+                state = next_state
+                score += reward
+            time.sleep(0.01)
+            if i == num_episodes:
+                eval_env.close()
+            scores.append(score)
 
-            state = next_state
-            score += reward
-
-        print(f"score: {score}")
-        self.env.close()
-
+        plt.figure()
+        plt.title('Score over time:')
+        plt.plot(scores)
+        plt.savefig('test_results.png')
 
     def _compute_dqn_loss(self, samples):
         #state, action, reward, next_state, done
         state = samples['state'].to(self.device)
-        action = samples['action'].reshape(-1, 1).to(self.device)
+        action = samples['action'].reshape(-1, 1).to(device = self.device, dtype = torch.long)
         reward = samples['reward'].reshape(-1, 1).to(self.device)
         next_state = samples['next_state'].to(self.device)
         done = samples['done'].reshape(-1, 1).to(self.device)
@@ -147,8 +180,7 @@ class DQNAgent:
         plt.subplot(133)
         plt.title('epsilons')
         plt.plot(epsilons)
-        plt.show()
-
+        plt.savefig('train_results.png')
 
 class RLEnvPlayer(Gen5EnvSinglePlayer):
     def __init__(self, embed_type: str, reward_type: str, reward_params: tuple, **kwargs):
@@ -176,26 +208,6 @@ class RLEnvPlayer(Gen5EnvSinglePlayer):
     def describe_embedding(self):
         return self.embedding_descriptor()
 
-
-if __name__ == "__main__":
-    from poke_env.player import RandomPlayer
-    from poke_env import LocalhostServerConfiguration
-    from gymnasium.utils.env_checker import check_env
-    opponent = RandomPlayer(
-        battle_format = "gen5randombattle",
-        server_configuration=LocalhostServerConfiguration
-    )
-    
-    testing_env = RLEnvPlayer(
-        embed_type=embeddings.EMBED_DICT[0],
-        reward_type=rewards.REW_DICT[0],
-        reward_params=(2.0, 1.0, 6, 0.0, 30.0),
-        battle_format="gen5randombattle",
-        server_configuration=LocalhostServerConfiguration,
-        start_challenging=True,
-        opponent=opponent
-    )
-
-    check_env(testing_env)
-    print(testing_env.observation_space.shape[0], testing_env.action_space.n)
-    testing_env.close()
+class SelfPlayEnvPlayer(RLEnvPlayer):
+    def potato(self):
+        pass
