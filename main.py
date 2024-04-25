@@ -1,7 +1,8 @@
+import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import env, embeddings, rewards
+import env, embeddings, rewards, agents
 
 from poke_env.player import RandomPlayer, MaxBasePowerPlayer, SimpleHeuristicsPlayer, background_cross_evaluate
 from poke_env import LocalhostServerConfiguration
@@ -20,7 +21,7 @@ def plot(shot, scores, losses, epsilons):
     plt.plot(epsilons)
     plt.savefig('train_results.png')
 
-def train(agent: env.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
+def train(agent: agents.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
     agent.train()
 
     state, _ = env.reset(seed=seed)
@@ -34,8 +35,6 @@ def train(agent: env.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
             print(f"Shot: {shot}")
         
         action = agent.select_action(state)
-        if action is None:
-            action = env.action_space.sample()
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
@@ -57,6 +56,16 @@ def train(agent: env.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
 
     env.close()
 
+def save_results(dir, agent: env.RLAgent, env: env.RLEnv, result_table):
+    existing_folders = [f for f in os.listdir(dir) if os.path.isdir(os.path.join(dir, f))]
+    new_folder = os.path.join(dir, f'Experiment{len(existing_folders)}/')
+    os.makedirs(new_folder)
+    print(f"Saving to {new_folder}")
+    with open(os.path.join(new_folder, 'results.txt'), 'w') as f:
+        f.write(result_table)
+    agent.save(new_folder)
+    env.save(new_folder)
+
 if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -73,24 +82,24 @@ if __name__ == "__main__":
         server_configuration=LocalhostServerConfiguration
     )
     
-    testing_env = env.RLEnv(
+    training_env = env.RLEnv(
         embed_type=embeddings.EMBED_DICT[0],
         reward_type=rewards.REW_DICT[0],
         reward_params=(2.0, 1.0, 6, 0.0, 30.0),
         battle_format="gen5randombattle",
         server_configuration=LocalhostServerConfiguration,
         start_challenging=True,
-        opponent=opponent2
+        opponent=opponent
     )
-    obs_dim = testing_env.observation_space.shape[0]
-    action_dim = testing_env.action_space.n
+    obs_dim = training_env.observation_space.shape[0]
+    action_dim = training_env.action_space.n
     dqn = env.EpsilonGreedyDQN(device, [128, 128], obs_dim, action_dim, 1000, 32, 100, 1 / 2000)
 
-    train(dqn, testing_env, num_shots=10000, seed=42)
+    train(dqn, training_env, num_shots=10000, seed=42)
 
     dqn_player = env.AgentPlayer(
         agent=dqn,
-        env=testing_env,
+        env=training_env,
         battle_format='gen5randombattle',
         server_configuration=LocalhostServerConfiguration           
     )
@@ -108,6 +117,7 @@ if __name__ == "__main__":
     for p_1, results in cross_evaluation.items():
         table.append([p_1] + [cross_evaluation[p_1][p_2] for p_2 in results])
     print("Cross evaluation of DQN with baselines: ")
-    print(tabulate(table))
+    tab_string = tabulate(table)
+    print(tab_string)
 
-    testing_env.close()
+    save_results('results/', dqn, training_env, tab_string)
