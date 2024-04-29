@@ -61,5 +61,5 @@ class AgentPlayer(Player):
     
     def choose_move(self, battle):
         embed = self.env.embed_battle(battle)
-        action = self.agent.select_action(embed)
+        action = self.agent.select_action(embed)[0]
         return self.env.action_to_move(action, battle)

@@ -64,9 +64,11 @@ class EpsilonGreedyDQN(RLAgent):
     def train(self):
         self.testing = False
         self.update_cnt = 0
+        self.dqn.train()
     
     def test(self):
         self.testing = True
+        self.dqn.eval()
     
     def select_action(self, state):
         if not self.testing and self.epsilon > np.random.random():
@@ -75,7 +77,7 @@ class EpsilonGreedyDQN(RLAgent):
             selected_action = self.dqn(torch.tensor(state, dtype=torch.float, device=self.device)).argmax()
             selected_action = selected_action.detach().cpu().numpy()
         
-        return selected_action
+        return selected_action, None
             
     def store(self, transition: list[np.ndarray]):
         self.memory.store(*[torch.tensor(val, dtype=torch.float) for val in transition])
@@ -156,15 +158,10 @@ def _projection(x: torch.Tensor):
                     p[i] -= excess / n 
     return p
 
-class EpsilonGreedyGIGA(RLAgent):
-    def __init__(self, device, shape: list[int], obs_dim: int, action_dim: int, epsilon_decay: float,
-                 max_epsilon: float = 1.0, min_epsilon: float = 0.1, gamma: float = 0.99):
+class PolicyGIGA(RLAgent):
+    def __init__(self, device, shape: list[int], obs_dim: int, action_dim: int, gamma: float = 0.99):
         self.device = device
 
-        self.epsilon = max_epsilon
-        self.epsilon_decay = epsilon_decay
-        self.max_epsilon = max_epsilon
-        self.min_epsilon = min_epsilon
         self.gamma = gamma
 
         self.action_dim = action_dim
@@ -180,19 +177,20 @@ class EpsilonGreedyGIGA(RLAgent):
 
     def train(self):
         self.testing = False
+        self.pi_net.train()
     
     def test(self):
         self.testing = True
+        self.pi_net.eval()
 
     def select_action(self, state) -> np.ndarray:
-        if not self.testing and self.epsilon > np.random.random():
-            selected_action = np.random.randint(low=0, high=self.action_dim)
-        else:
-            probs = self.pi_net(torch.tensor(state, dtype=torch.float, device=self.device).unsqueeze(dim=0))
-            action_distr = torch.distributions.Categorical(probs.squeeze())
-            selected_action = action_distr.sample()
+        probs = self.pi_net(torch.tensor(state, dtype=torch.float, device=self.device).unsqueeze(dim=0))
+        action_distr = torch.distributions.Categorical(probs.squeeze())
+        selected_action = action_distr.sample()
+        log_prob = action_distr.log_prob(selected_action)
+        selected_action = selected_action.detach().cpu().numpy()
         
-        return selected_action
+        return selected_action, log_prob
     
     def replay_train(self) -> tuple[float, float]:
         samples = self.memory.sample()
@@ -204,6 +202,7 @@ class EpsilonGreedyGIGA(RLAgent):
             states = samples['state'].to(self.device)
             actions = samples['action'].reshape(-1, 1).to(device = self.device, dtype = torch.long)
             reward = samples['reward'].reshape(-1, 1).to(self.device)
+            x_logprobs = samples['log_probs'].reshape(-1, 1).to(self.device)
             
             T = reward.shape[0]
             deltas = torch.zeros(T)
@@ -214,11 +213,11 @@ class EpsilonGreedyGIGA(RLAgent):
             
             for idx in range(len(actions)):
                 action, state, delta = actions[idx], states[idx].unsqueeze(dim=0), deltas[idx]
-                x_logprobs, z_logprobs = self._action_logprobs(state, action)
+                z_logprobs = self._action_logprobs(state, action)
                 adj = torch.nn.functional.one_hot(action, num_classes=self.action_dim).to(self.device)
                 #Eqn(1) GIGA: Add, because subtract negative G_t
                 state_action_distrs = self.pi_net(state)
-                greedy_projection = _projection(state_action_distrs.squeeze() + (adj * x_logprobs * delta).squeeze())
+                greedy_projection = _projection(state_action_distrs.squeeze() + (adj * x_logprobs[idx] * delta).squeeze())
                 loss = torch.nn.functional.smooth_l1_loss(state_action_distrs.squeeze(), greedy_projection)
                 self.x_optimizer.zero_grad()
                 loss.backward()
@@ -242,20 +241,14 @@ class EpsilonGreedyGIGA(RLAgent):
                 loss.backward()
                 self.x_optimizer.step()
 
-            self.epsilon = max(self.min_epsilon, self.epsilon - (self.max_epsilon - self.min_epsilon) * self.epsilon_decay)
-            
             self.memory.zero()
     
     def _action_logprobs(self, state, action):
-        x_action_probs = self.pi_net(state)
-        x_distr = torch.distributions.Categorical(x_action_probs)
-        x_log = x_distr.log_prob(action)
-
         z_action_probs = self.pi_target(state)
         z_distr = torch.distributions.Categorical(z_action_probs)
         z_log = z_distr.log_prob(action)
 
-        return x_log, z_log
+        return z_log
 
     def store(self, transition):
         self.memory.store(*[torch.tensor(val, dtype=torch.float).unsqueeze(dim=0) for val in transition])
@@ -263,10 +256,7 @@ class EpsilonGreedyGIGA(RLAgent):
     def save(self, directory):
         config_path = os.path.join(directory, 'AlgorithmConfig.json')
         params = dict(
-            algorithm="EpsilonGreedyGIGA",
-            epsilon_decay=self.epsilon_decay,
-            max_epsilon=self.max_epsilon,
-            min_epsilon=self.min_epsilon,
+            algorithm="PolicyGIGA",
             gamma=self.gamma,
         )
         with open(config_path, 'w') as f:
@@ -287,11 +277,114 @@ class EpsilonGreedyGIGA(RLAgent):
     def load(self, path):
         pass
 
+class REINFORCE(RLAgent):
+    def __init__(self, device, shape: list[int], obs_dim: int, action_dim: int, gamma: float = 0.99):
+        self.device = device
+        self.gamma = gamma
+        self.action_dim = action_dim
+        
+        self.memory = nets.EpisodeReplayBuffer(device, obs_dim)
+        self.net = nets.PolicyNet(obs_dim, action_dim, shape).to(device)
 
-class EpsilonGreedyWPL(RLAgent):
-    """
-    Prototype Class for RLAgents
-    """
+        self.optimizer = torch.optim.SGD(self.net.parameters())
+        self.testing = False
+
+    def train(self):
+        self.testing = False
+        self.net.train()
+    
+    def test(self):
+        self.testing = True
+        self.net.eval()
+
+    def select_action(self, state) -> np.ndarray:
+        probs = self.net(torch.tensor(state, dtype=torch.float, device=self.device))
+        action_distr = torch.distributions.Categorical(probs)
+        selected_action = action_distr.sample()
+        log_prob = action_distr.log_prob(selected_action)
+        selected_action = selected_action.detach().cpu().numpy()
+        
+        return selected_action, log_prob
+    
+    def replay_train(self) -> tuple[float, float]:
+        samples = self.memory.sample()
+
+        #Episode is finished
+        if samples['done'][-1] == 1:
+            samples = self.memory.sample()
+
+            reward = samples['reward'].reshape(-1, 1).to(self.device)
+            log_probs = samples['log_probs'].reshape(-1, 1).to(self.device)
+            
+            #Calculate rewards
+            T = reward.shape[0]
+            deltas = torch.zeros(T)
+            deltas[-1] = reward[-1]
+            for t in reversed(range(T - 1)):
+                deltas[t] = reward[t] + self.gamma * deltas[t+1]
+            deltas = deltas.to(self.device).detach()
+
+            loss = -(deltas * log_probs).sum()
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            self.memory.zero()
+
+            return loss.item()
+
+    def store(self, transition):
+        self.memory.store(*[torch.tensor(val, dtype=torch.float).unsqueeze(dim=0) for val in transition])
+    
+    def save(self, directory):
+        config_path = os.path.join(directory, 'AlgorithmConfig.json')
+        params = dict(
+            algorithm="REINFORCE",
+            gamma=self.gamma
+        )
+        with open(config_path, 'w') as f:
+            json.dump(params, f)
+
+        models_path = os.path.join(directory, 'net.pt')
+        torch.save(self.net, models_path)
+
+        optim_path = os.path.join(directory, 'optimizer.pt')
+        torch.save(self.optimizer, optim_path)
+
+    def load(self, path):
+        pass
+
+class EpsilonGreedyActorCritic(RLAgent):
+    def __init__(self):
+        self.device = None
+        self.memory = None
+
+        self.testing = False
+    
+    def train(self):
+        pass
+    
+    def test(self):
+        pass
+
+    def select_action(self, state) -> np.ndarray:
+        pass
+    
+    def replay_train(self) -> tuple[float, float]:
+        pass
+
+    def store(self, transition):
+        pass
+    
+    def save(self, path):
+        pass
+
+    def load(self, path):
+        pass
+
+
+class WPL(RLAgent):
     def __init__(self):
         self.device = None
         self.memory = None

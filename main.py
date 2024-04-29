@@ -34,11 +34,14 @@ def train(agent: agents.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
         if shot % 1000 == 0:
             print(f"Shot: {shot}")
         
-        action = agent.select_action(state)
+        action, log_prob = agent.select_action(state)
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
-        agent.store([state, action, reward, next_state, done])
+        if log_prob is None:
+            agent.store([state, action, reward, next_state, done])
+        else: #Policy Optimization Method
+            agent.store([state, action, reward, log_prob, done])
 
         state = next_state
         score += reward
@@ -142,9 +145,9 @@ if __name__ == "__main__":
         # server_configuration=LocalhostServerConfiguration           
     # )
 
-    giga = agents.EpsilonGreedyGIGA(device, [128, 128], obs_dim, action_dim, 1 / 2000)
+    giga = agents.PolicyGIGA(device, [128, 128], obs_dim, action_dim, 1 / 2000)
 
-    train_policy(giga, training_env, num_shots=1000, seed=42)
+    train(giga, training_env, num_shots=10000, seed=42)
 
     giga_player = env.AgentPlayer(
         agent = giga,
