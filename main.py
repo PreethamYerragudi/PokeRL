@@ -56,7 +56,45 @@ def train(agent: agents.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
 
     env.close()
 
-def save_results(dir, agent: env.RLAgent, env: env.RLEnv, result_table):
+def train_policy(agent: agents.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
+    agent.train()
+
+    epsilons = []
+    losses = []
+    scores = []
+    score = 0
+
+    for shot in range(1, num_shots+1):
+        if shot % 100 == 0:
+            print(f"Shot: {shot}")
+        
+        state, _ = env.reset(seed=seed)
+        action = agent.select_action(state)
+        while True:
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+
+            agent.store([state, action, reward, next_state, done])
+
+            state = next_state
+            score += reward
+            if done:
+                scores.append(score)
+                score = 0
+                break
+
+            action = agent.select_action(state)
+            
+        vals = agent.replay_train()
+        if vals is not None:
+            losses.append(vals[0])
+            epsilons.append(vals[1])
+    
+    # plot(shot, scores, losses, epsilons)
+
+    env.close()
+
+def save_results(dir, agent: agents.RLAgent, env: env.RLEnv, result_table):
     existing_folders = [f for f in os.listdir(dir) if os.path.isdir(os.path.join(dir, f))]
     new_folder = os.path.join(dir, f'Experiment{len(existing_folders)}/')
     os.makedirs(new_folder)
@@ -89,24 +127,35 @@ if __name__ == "__main__":
         battle_format="gen5randombattle",
         server_configuration=LocalhostServerConfiguration,
         start_challenging=True,
-        opponent=opponent
+        opponent=opponent2
     )
     obs_dim = training_env.observation_space.shape[0]
     action_dim = training_env.action_space.n
-    dqn = env.EpsilonGreedyDQN(device, [128, 128], obs_dim, action_dim, 1000, 32, 100, 1 / 2000)
+    # dqn = agents.EpsilonGreedyDQN(device, [128, 128], obs_dim, action_dim, 1000, 32, 100, 1 / 2000)
 
-    train(dqn, training_env, num_shots=10000, seed=42)
+    # train(dqn, training_env, num_shots=10000, seed=42)
 
-    dqn_player = env.AgentPlayer(
-        agent=dqn,
-        env=training_env,
-        battle_format='gen5randombattle',
-        server_configuration=LocalhostServerConfiguration           
+    # dqn_player = env.AgentPlayer(
+        # agent=dqn,
+        # env=training_env,
+        # battle_format='gen5randombattle',
+        # server_configuration=LocalhostServerConfiguration           
+    # )
+
+    giga = agents.EpsilonGreedyGIGA(device, [128, 128], obs_dim, action_dim, 1 / 2000)
+
+    train_policy(giga, training_env, num_shots=1000, seed=42)
+
+    giga_player = env.AgentPlayer(
+        agent = giga,
+        env = training_env,
+        battle_format = 'gen5randombattle',
+        server_configuration=LocalhostServerConfiguration
     )
 
     n_challenges = 50
     players = [
-        opponent, opponent2, opponent3, dqn_player
+        opponent, opponent2, opponent3, giga_player
     ]
 
     print("Beginning Cross Evaluation:")
@@ -120,4 +169,4 @@ if __name__ == "__main__":
     tab_string = tabulate(table)
     print(tab_string)
 
-    save_results('results/', dqn, training_env, tab_string)
+    save_results('results/', giga, training_env, tab_string)
