@@ -20,15 +20,13 @@ def simple_reward(last_battle: AbstractBattle, battle: AbstractBattle, params: t
         elif mon.status is not None:
             current_value -= status_value
 
-    current_value += (number_of_pokemon - len(battle.team)) * hp_value
-
     for mon in battle.opponent_team.values():
         current_value -= mon.current_hp_fraction * hp_value
         if mon.fainted:
             current_value += fainted_value
         elif mon.status is not None:
             current_value += status_value
-    current_value -= (number_of_pokemon - len(battle.opponent_team)) * hp_value
+
     if battle.won:
         current_value += victory_value
     elif battle.lost:

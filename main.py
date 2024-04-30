@@ -72,7 +72,8 @@ def save_results(dir, agent: agents.RLAgent, env: env.RLEnv, result_table):
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument('-o', '--opponent', default='random', choices=['random', 'max'], help='Training Opponent')
+    ap.add_argument('-o', '--opponent', default='random', choices=['random', 'max', 'heuristic', 'selfplay'], help='Training Opponent')
+    ap.add_argument('-m', '--method', default='dqn', choices=['dqn', 'pg', 'giga', 'a2c'], help='Training Method')
     args = ap.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -90,7 +91,18 @@ if __name__ == "__main__":
         server_configuration=LocalhostServerConfiguration
     )
     
-    opp = opponent if args.opponent == 'random' else opponent2
+    if args.opponent == 'random':
+        opp = opponent
+    elif args.opponent == 'max':
+        opp = opponent2
+    elif args.opponent == 'heuristic':
+        opp = opponent3
+    elif args.opponent == 'selfplay':
+        print("Selfplay currently not implemented")
+        exit()
+    else:
+        print("Invalid opponent type")
+        exit()
     print(f"Training with opponent type {type(opp)}")
 
     training_env = env.RLEnv(
@@ -104,45 +116,23 @@ if __name__ == "__main__":
     )
     obs_dim = training_env.observation_space.shape[0]
     action_dim = training_env.action_space.n
-    # dqn = agents.EpsilonGreedyDQN(device, [128, 128], obs_dim, action_dim, 1000, 32, 100, 1 / 2000)
+    
+    if args.method == 'dqn':
+        method = agents.EpsilonGreedyDQN(device, [128, 128], obs_dim, action_dim, 1000, 32, 100, 1 / 2000)
+    elif args.method == 'pg':
+        method = agents.REINFORCE(device, [128, 128], obs_dim, action_dim)
+    elif args.method == 'giga':
+        method = agents.PolicyGIGA(device, [128, 128], obs_dim, action_dim)
+    elif args.method == 'a2c':
+        method = agents.AdvantageActorCritic(device, [128, 128], obs_dim, action_dim)
+    else:
+        print("Method not supported")
+        exit()
+    
+    train(method, training_env, num_shots=10000, seed=42)
 
-    # train(dqn, training_env, num_shots=10000, seed=42)
-
-    # dqn_player = env.AgentPlayer(
-        # agent=dqn,
-        # env=training_env,
-        # battle_format='gen5randombattle',
-        # server_configuration=LocalhostServerConfiguration           
-    # )
-
-    # giga = agents.PolicyGIGA(device, [128, 128], obs_dim, action_dim)
-
-    # train(giga, training_env, num_shots=10000, seed=42)
-
-    # giga_player = env.AgentPlayer(
-        # agent = giga,
-        # env = training_env,
-        # battle_format = 'gen5randombattle',
-        # server_configuration=LocalhostServerConfiguration
-    # )
-
-    # reinforce = agents.REINFORCE(device, [128, 128], obs_dim, action_dim)
-
-    # train(reinforce, training_env, num_shots=10000, seed=42)
- 
-    # reinforce_player = env.AgentPlayer(
-    #     agent=reinforce,
-    #     env=training_env,
-    #     battle_format = 'gen5randombattle',
-    #     server_configuration = LocalhostServerConfiguration
-    # )
-
-    a2c = agents.AdvantageActorCritic(device, [128, 128], obs_dim, action_dim)
-
-    train(a2c, training_env, num_shots=10000, seed=42)
-
-    a2c_player = env.AgentPlayer(
-        agent = a2c,
+    agent_player = env.AgentPlayer(
+        agent = method,
         env = training_env,
         battle_format = 'gen5randombattle',
         server_configuration = LocalhostServerConfiguration
@@ -150,7 +140,7 @@ if __name__ == "__main__":
 
     n_challenges = 50
     players = [
-        opponent, opponent2, opponent3, a2c_player
+        opponent, opponent2, opponent3, agent_player
     ]
 
     print("Beginning Cross Evaluation:")
@@ -164,4 +154,4 @@ if __name__ == "__main__":
     tab_string = tabulate(table)
     print(tab_string)
 
-    save_results('results/', a2c, training_env, tab_string)
+    save_results('results/', method, training_env, tab_string)
