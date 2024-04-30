@@ -41,7 +41,7 @@ def train(agent: agents.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
         if log_prob is None:
             agent.store([state, action, reward, next_state, done])
         else: #Policy Optimization Method
-            agent.store([state, action, reward, log_prob, done])
+            agent.store([state, action, reward, done, log_prob])
 
         state = next_state
         score += reward
@@ -59,44 +59,6 @@ def train(agent: agents.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
 
     env.close()
 
-def train_policy(agent: agents.RLAgent, env: env.RLEnv, num_shots: int, seed: int):
-    agent.train()
-
-    epsilons = []
-    losses = []
-    scores = []
-    score = 0
-
-    for shot in range(1, num_shots+1):
-        if shot % 100 == 0:
-            print(f"Shot: {shot}")
-        
-        state, _ = env.reset(seed=seed)
-        action = agent.select_action(state)
-        while True:
-            next_state, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-
-            agent.store([state, action, reward, next_state, done])
-
-            state = next_state
-            score += reward
-            if done:
-                scores.append(score)
-                score = 0
-                break
-
-            action = agent.select_action(state)
-            
-        vals = agent.replay_train()
-        if vals is not None:
-            losses.append(vals[0])
-            epsilons.append(vals[1])
-    
-    # plot(shot, scores, losses, epsilons)
-
-    env.close()
-
 def save_results(dir, agent: agents.RLAgent, env: env.RLEnv, result_table):
     existing_folders = [f for f in os.listdir(dir) if os.path.isdir(os.path.join(dir, f))]
     new_folder = os.path.join(dir, f'Experiment{len(existing_folders)}/')
@@ -108,6 +70,11 @@ def save_results(dir, agent: agents.RLAgent, env: env.RLEnv, result_table):
     env.save(new_folder)
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('-o', '--opponent', default='random', choices=['random', 'max'], help='Training Opponent')
+    args = ap.parse_args()
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     opponent = RandomPlayer(
@@ -123,6 +90,9 @@ if __name__ == "__main__":
         server_configuration=LocalhostServerConfiguration
     )
     
+    opp = opponent if args.opponent == 'random' else opponent2
+    print(f"Training with opponent type {type(opp)}")
+
     training_env = env.RLEnv(
         embed_type=embeddings.EMBED_DICT[0],
         reward_type=rewards.REW_DICT[0],
@@ -130,7 +100,7 @@ if __name__ == "__main__":
         battle_format="gen5randombattle",
         server_configuration=LocalhostServerConfiguration,
         start_challenging=True,
-        opponent=opponent2
+        opponent=opp
     )
     obs_dim = training_env.observation_space.shape[0]
     action_dim = training_env.action_space.n
@@ -145,20 +115,42 @@ if __name__ == "__main__":
         # server_configuration=LocalhostServerConfiguration           
     # )
 
-    giga = agents.PolicyGIGA(device, [128, 128], obs_dim, action_dim, 1 / 2000)
+    # giga = agents.PolicyGIGA(device, [128, 128], obs_dim, action_dim)
 
-    train(giga, training_env, num_shots=10000, seed=42)
+    # train(giga, training_env, num_shots=10000, seed=42)
 
-    giga_player = env.AgentPlayer(
-        agent = giga,
+    # giga_player = env.AgentPlayer(
+        # agent = giga,
+        # env = training_env,
+        # battle_format = 'gen5randombattle',
+        # server_configuration=LocalhostServerConfiguration
+    # )
+
+    # reinforce = agents.REINFORCE(device, [128, 128], obs_dim, action_dim)
+
+    # train(reinforce, training_env, num_shots=10000, seed=42)
+ 
+    # reinforce_player = env.AgentPlayer(
+    #     agent=reinforce,
+    #     env=training_env,
+    #     battle_format = 'gen5randombattle',
+    #     server_configuration = LocalhostServerConfiguration
+    # )
+
+    a2c = agents.AdvantageActorCritic(device, [128, 128], obs_dim, action_dim)
+
+    train(a2c, training_env, num_shots=10000, seed=42)
+
+    a2c_player = env.AgentPlayer(
+        agent = a2c,
         env = training_env,
         battle_format = 'gen5randombattle',
-        server_configuration=LocalhostServerConfiguration
+        server_configuration = LocalhostServerConfiguration
     )
 
     n_challenges = 50
     players = [
-        opponent, opponent2, opponent3, giga_player
+        opponent, opponent2, opponent3, a2c_player
     ]
 
     print("Beginning Cross Evaluation:")
@@ -172,4 +164,4 @@ if __name__ == "__main__":
     tab_string = tabulate(table)
     print(tab_string)
 
-    save_results('results/', giga, training_env, tab_string)
+    save_results('results/', a2c, training_env, tab_string)

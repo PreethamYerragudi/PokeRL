@@ -8,7 +8,7 @@ class EpisodeReplayBuffer:
         self.zero()
 
     def store(self, state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
-              log_prob: torch.Tensor, done: bool):
+              done: bool, log_prob: torch.Tensor):
         self.obs_buf = torch.cat((self.obs_buf, state.to(self.device)), dim=0)
         self.log_prob_buf = torch.cat((self.log_prob_buf, log_prob.to(self.device)), dim=0)
         self.acts_buf = torch.cat((self.acts_buf, action.to(self.device)), dim=0)
@@ -91,3 +91,16 @@ class PolicyNet(Network):
         
     def forward(self, x: torch.Tensor):
         return self.softm(self.layers(x))
+
+class ActorCritic(nn.Module):
+    def __init__(self, actor, critic):
+        super(ActorCritic, self).__init__()
+
+        self.actor = actor
+        self.critic = critic
+    
+    def forward(self, state):
+        action_pred = self.actor(state)
+        value_pred = self.critic(state)
+
+        return action_pred, value_pred

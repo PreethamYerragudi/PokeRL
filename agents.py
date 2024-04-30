@@ -85,7 +85,18 @@ class EpsilonGreedyDQN(RLAgent):
     def replay_train(self):
         if len(self.memory) >= self.batch_size:
             samples = self.memory.sample_batch()
-            loss = self._compute_dqn_loss(samples)
+            #state, action, reward, next_state, done
+            state = samples['state'].to(self.device)
+            action = samples['action'].reshape(-1, 1).to(device = self.device, dtype = torch.long)
+            reward = samples['reward'].reshape(-1, 1).to(self.device)
+            next_state = samples['next_state'].to(self.device)
+            done = samples['done'].reshape(-1, 1).to(self.device)
+            curr_q_value = self.dqn(state).gather(1, action)
+            #Detach to keep target Q-Network frozen
+            next_q_value = self.dqn_target(next_state).max(dim=1, keepdim=True)[0].detach()
+            target = (reward + self.gamma * next_q_value * (1 - done)).to(self.device)
+            loss = torch.nn.functional.smooth_l1_loss(curr_q_value, target)
+            
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -120,22 +131,6 @@ class EpsilonGreedyDQN(RLAgent):
 
     def load(self, directory):
         pass
-
-    def _compute_dqn_loss(self, samples):
-        #state, action, reward, next_state, done
-        state = samples['state'].to(self.device)
-        action = samples['action'].reshape(-1, 1).to(device = self.device, dtype = torch.long)
-        reward = samples['reward'].reshape(-1, 1).to(self.device)
-        next_state = samples['next_state'].to(self.device)
-        done = samples['done'].reshape(-1, 1).to(self.device)
-
-        curr_q_value = self.dqn(state).gather(1, action)
-        #Detach to keep target Q-Network frozen
-        next_q_value = self.dqn_target(next_state).max(dim=1, keepdim=True)[0].detach()
-        target = (reward + self.gamma * next_q_value * (1 - done)).to(self.device)
-        loss = torch.nn.functional.smooth_l1_loss(curr_q_value, target)
-
-        return loss
 
 def _projection(x: torch.Tensor):
     p = x.detach().clone()
@@ -197,8 +192,6 @@ class PolicyGIGA(RLAgent):
 
         #Episode is finished
         if samples['done'][-1] == 1:
-            samples = self.memory.sample()
-
             states = samples['state'].to(self.device)
             actions = samples['action'].reshape(-1, 1).to(device = self.device, dtype = torch.long)
             reward = samples['reward'].reshape(-1, 1).to(self.device)
@@ -251,7 +244,9 @@ class PolicyGIGA(RLAgent):
         return z_log
 
     def store(self, transition):
-        self.memory.store(*[torch.tensor(val, dtype=torch.float).unsqueeze(dim=0) for val in transition])
+        lst = [torch.tensor(val, dtype=torch.float).unsqueeze(dim=0) for val in transition[:-1]]
+        lst.append(transition[-1].clone().detach().unsqueeze(dim=0).requires_grad_(True))
+        self.memory.store(*lst)
     
     def save(self, directory):
         config_path = os.path.join(directory, 'AlgorithmConfig.json')
@@ -311,8 +306,6 @@ class REINFORCE(RLAgent):
 
         #Episode is finished
         if samples['done'][-1] == 1:
-            samples = self.memory.sample()
-
             reward = samples['reward'].reshape(-1, 1).to(self.device)
             log_probs = samples['log_probs'].reshape(-1, 1).to(self.device)
             
@@ -332,10 +325,12 @@ class REINFORCE(RLAgent):
             
             self.memory.zero()
 
-            return loss.item()
+            return loss.item(), None
 
     def store(self, transition):
-        self.memory.store(*[torch.tensor(val, dtype=torch.float).unsqueeze(dim=0) for val in transition])
+        lst = [torch.tensor(val, dtype=torch.float).unsqueeze(dim=0) for val in transition[:-1]]
+        lst.append(transition[-1].clone().detach().unsqueeze(dim=0).requires_grad_(True))
+        self.memory.store(*lst)
     
     def save(self, directory):
         config_path = os.path.join(directory, 'AlgorithmConfig.json')
@@ -355,30 +350,90 @@ class REINFORCE(RLAgent):
     def load(self, path):
         pass
 
-class EpsilonGreedyActorCritic(RLAgent):
-    def __init__(self):
-        self.device = None
-        self.memory = None
+class AdvantageActorCritic(RLAgent):
+    def __init__(self, device, shape: list[int], obs_dim: int, action_dim: int, gamma: float = 0.99):
+        self.device = device
 
+        self.gamma = gamma
+        self.action_dim = action_dim
+
+        self.memory = nets.EpisodeReplayBuffer(device, obs_dim)
+        self.policy = nets.ActorCritic(
+            nets.PolicyNet(obs_dim, action_dim, shape), 
+            nets.Network(obs_dim, action_dim, shape)
+        ).to(device)
+        self.optimizer = torch.optim.SGD(self.policy.parameters())
         self.testing = False
     
     def train(self):
-        pass
+        self.testing = False
+        self.policy.train()
     
     def test(self):
-        pass
+        self.testing = True
+        self.policy.eval()
 
     def select_action(self, state) -> np.ndarray:
-        pass
+        probs, _ = self.policy(torch.tensor(state, dtype=torch.float, device=self.device))
+        action_distr = torch.distributions.Categorical(probs)
+        selected_action = action_distr.sample()
+        log_prob = action_distr.log_prob(selected_action)
+        selected_action = selected_action.detach().cpu().numpy()
+        
+        return selected_action, log_prob
     
     def replay_train(self) -> tuple[float, float]:
-        pass
+        samples = self.memory.sample()
+
+        #Episode is finished
+        if samples['done'][-1] == 1:
+            states = samples['state'].to(self.device)
+            actions = samples['action'].to(device = self.device, dtype = torch.long).unsqueeze(dim=-1)
+            reward = samples['reward'].reshape(-1, 1).to(self.device)
+            log_probs = samples['log_probs'].reshape(-1, 1).to(self.device)
+            
+            #Calculate rewards
+            T = reward.shape[0]
+            deltas = torch.zeros(T)
+            deltas[-1] = reward[-1]
+            for t in reversed(range(T - 1)):
+                deltas[t] = reward[t] + self.gamma * deltas[t+1]
+            deltas = deltas.to(self.device).detach()
+            _, values = self.policy(states)
+            values = values.gather(1, actions)
+            advantage = deltas - values.detach().clone()
+
+            value_loss = torch.nn.functional.smooth_l1_loss(deltas, values.squeeze())
+            policy_loss = -(advantage * log_probs).sum()
+            
+            self.optimizer.zero_grad()
+            policy_loss.backward()
+            value_loss.backward()
+            self.optimizer.step()
+            
+            self.memory.zero()
+
+            return policy_loss.item(), value_loss.item()
 
     def store(self, transition):
-        pass
+        lst = [torch.tensor(val, dtype=torch.float).unsqueeze(dim=0) for val in transition[:-1]]
+        lst.append(transition[-1].clone().detach().unsqueeze(dim=0).requires_grad_(True))
+        self.memory.store(*lst)
     
-    def save(self, path):
-        pass
+    def save(self, directory):
+        config_path = os.path.join(directory, 'AlgorithmConfig.json')
+        params = dict(
+            algorithm="ActorCritic",
+            gamma=self.gamma
+        )
+        with open(config_path, 'w') as f:
+            json.dump(params, f)
+
+        models_path = os.path.join(directory, 'net.pt')
+        torch.save(self.policy, models_path)
+
+        optim_path = os.path.join(directory, 'optimizer.pt')
+        torch.save(self.optimizer, optim_path)
 
     def load(self, path):
         pass
