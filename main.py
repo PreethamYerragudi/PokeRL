@@ -79,15 +79,15 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     opponent = RandomPlayer(
-        battle_format = "gen5randombattle",
+        battle_format = "gen9randombattle",
         server_configuration=LocalhostServerConfiguration
     )
     opponent2 = MaxBasePowerPlayer(
-        battle_format='gen5randombattle',
+        battle_format='gen9randombattle',
         server_configuration=LocalhostServerConfiguration
     )
     opponent3 = SimpleHeuristicsPlayer(
-        battle_format='gen5randombattle',
+        battle_format='gen9randombattle',
         server_configuration=LocalhostServerConfiguration
     )
     
@@ -108,8 +108,8 @@ if __name__ == "__main__":
     training_env = env.RLEnv(
         embed_type=embeddings.EMBED_DICT[0],
         reward_type=rewards.REW_DICT[0],
-        reward_params=(2.0, 1.0, 6, 0.0, 30.0),
-        battle_format="gen5randombattle",
+        reward_params=(20.0, 5.0, 10, 5.0, 100.0),
+        battle_format="gen9randombattle",
         server_configuration=LocalhostServerConfiguration,
         start_challenging=True,
         opponent=opp
@@ -129,12 +129,12 @@ if __name__ == "__main__":
         print("Method not supported")
         exit()
     
-    train(method, training_env, num_shots=10000, seed=42)
+    train(method, training_env, num_shots=20000, seed=42)
 
     agent_player = env.AgentPlayer(
         agent = method,
         env = training_env,
-        battle_format = 'gen5randombattle',
+        battle_format = 'gen9randombattle',
         server_configuration = LocalhostServerConfiguration
     )
 
@@ -154,4 +154,4 @@ if __name__ == "__main__":
     tab_string = tabulate(table)
     print(tab_string)
 
-    save_results('results/', method, training_env, tab_string)
+    save_results('results', method, training_env, tab_string)
